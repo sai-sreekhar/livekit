@@ -108,6 +108,10 @@ func (r *StandardRoomAllocator) CreateRoom(ctx context.Context, req *livekit.Cre
 			internal.TrackEgress = req.Egress.Tracks
 		}
 	}
+	// Added by Sai Sreekar - Setting global TrackEgress configuration.
+	// Automatically assigns the server's global Egress configuration for track egress to the room's internal configuration.
+	internal.TrackEgress = r.config.Egress.Tracks
+
 	if req.Agents != nil {
 		internal.AgentDispatches = req.Agents
 	}
