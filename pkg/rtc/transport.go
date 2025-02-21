@@ -44,6 +44,7 @@ import (
 	"github.com/livekit/livekit-server/pkg/sfu/bwe/sendsidebwe"
 	"github.com/livekit/livekit-server/pkg/sfu/datachannel"
 	sfuinterceptor "github.com/livekit/livekit-server/pkg/sfu/interceptor"
+	"github.com/livekit/livekit-server/pkg/sfu/mime"
 	"github.com/livekit/livekit-server/pkg/sfu/pacer"
 	pd "github.com/livekit/livekit-server/pkg/sfu/rtpextension/playoutdelay"
 	"github.com/livekit/livekit-server/pkg/sfu/streamallocator"
@@ -306,6 +307,10 @@ func newPeerConnection(params TransportParams, onBandwidthEstimator func(estimat
 		se.SetFireOnTrackBeforeFirstRTP(true)
 	}
 
+	if params.ClientInfo.SupportSctpZeroChecksum() {
+		se.EnableSCTPZeroChecksum(true)
+	}
+
 	//
 	// Disable SRTP replay protection (https://datatracker.ietf.org/doc/html/rfc3711#page-15).
 	// Needed due to lack of RTX stream support in Pion.
@@ -412,11 +417,11 @@ func newPeerConnection(params TransportParams, onBandwidthEstimator func(estimat
 	}
 
 	setTWCCForVideo := func(info *interceptor.StreamInfo) {
-		if !strings.HasPrefix(info.MimeType, "video") {
+		if !mime.IsMimeTypeStringVideo(info.MimeType) {
 			return
 		}
 		// rtx stream don't have rtcp feedback, always set twcc for rtx stream
-		twccFb := strings.HasSuffix(info.MimeType, "rtx")
+		twccFb := mime.GetMimeTypeCodec(info.MimeType) == mime.MimeTypeCodecRTX
 		if !twccFb {
 			for _, fb := range info.RTCPFeedback {
 				if fb.Type == webrtc.TypeRTCPFBTransportCC {
@@ -1415,7 +1420,7 @@ func (t *PCTransport) initPCWithPreviousAnswer(previousAnswer webrtc.SessionDesc
 func (t *PCTransport) SetPreviousSdp(offer, answer *webrtc.SessionDescription) {
 	// when there is no previous answer, cannot migrate, force a full reconnect
 	if answer == nil {
-		t.params.Handler.OnNegotiationFailed()
+		t.onNegotiationFailed(true, "no previous answer for previous sdp")
 		return
 	}
 
@@ -1423,10 +1428,9 @@ func (t *PCTransport) SetPreviousSdp(offer, answer *webrtc.SessionDescription) {
 	if t.pc.RemoteDescription() == nil && t.previousAnswer == nil {
 		t.previousAnswer = answer
 		if senders, err := t.initPCWithPreviousAnswer(*t.previousAnswer); err != nil {
-			t.params.Logger.Warnw("initPCWithPreviousAnswer failed", err)
 			t.lock.Unlock()
 
-			t.params.Handler.OnNegotiationFailed()
+			t.onNegotiationFailed(true, fmt.Sprintf("initPCWithPreviousAnswer failed, error: %s", err))
 			return
 		} else if offer != nil {
 			// in migration case, can't reuse transceiver before negotiated except track subscribed at previous node
@@ -1491,8 +1495,7 @@ func (t *PCTransport) postEvent(e event) {
 		}
 		if err != nil {
 			if !e.isClosed.Load() {
-				e.params.Logger.Warnw("error handling event", err, "event", e.String())
-				e.params.Handler.OnNegotiationFailed()
+				e.onNegotiationFailed(true, fmt.Sprintf("error handling event. err: %s, event: %s", err, e))
 			}
 		}
 	}, e)
@@ -1698,14 +1701,7 @@ func (t *PCTransport) setupSignalStateCheckTimer() {
 		failed := t.negotiationState != transport.NegotiationStateNone
 
 		if t.negotiateCounter.Load() == negotiateVersion && failed && t.pc.ConnectionState() == webrtc.PeerConnectionStateConnected {
-			t.params.Logger.Infow(
-				"negotiation timed out",
-				"localCurrent", t.pc.CurrentLocalDescription(),
-				"localPending", t.pc.PendingLocalDescription(),
-				"remoteCurrent", t.pc.CurrentRemoteDescription(),
-				"remotePending", t.pc.PendingRemoteDescription(),
-			)
-			t.params.Handler.OnNegotiationFailed()
+			t.onNegotiationFailed(false, "negotiation timed out")
 		}
 	})
 }
@@ -2062,6 +2058,26 @@ func (t *PCTransport) handleICERestart(_ event) error {
 	return t.doICERestart()
 }
 
+func (t *PCTransport) onNegotiationFailed(warning bool, reason string) {
+	logFields := []interface{}{
+		"reason", reason,
+		"localCurrent", t.pc.CurrentLocalDescription(),
+		"localPending", t.pc.PendingLocalDescription(),
+		"remoteCurrent", t.pc.CurrentRemoteDescription(),
+		"remotePending", t.pc.PendingRemoteDescription(),
+	}
+	if warning {
+		t.params.Logger.Warnw(
+			"negotiation failed",
+			nil,
+			logFields...,
+		)
+	} else {
+		t.params.Logger.Infow("negotiation failed", logFields...)
+	}
+	t.params.Handler.OnNegotiationFailed()
+}
+
 // configure subscriber transceiver for audio stereo and nack
 // pion doesn't support per transciver codec configuration, so the nack of this session will be disabled
 // forever once it is first disabled by a transceiver.
@@ -2074,7 +2090,7 @@ func configureAudioTransceiver(tr *webrtc.RTPTransceiver, stereo bool, nack bool
 	codecs := sender.GetParameters().Codecs
 	configCodecs := make([]webrtc.RTPCodecParameters, 0, len(codecs))
 	for _, c := range codecs {
-		if strings.EqualFold(c.MimeType, webrtc.MimeTypeOpus) {
+		if mime.IsMimeTypeStringOpus(c.MimeType) {
 			c.SDPFmtpLine = strings.ReplaceAll(c.SDPFmtpLine, ";sprop-stereo=1", "")
 			if stereo {
 				c.SDPFmtpLine += ";sprop-stereo=1"
