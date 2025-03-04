@@ -77,15 +77,6 @@ type Config struct {
 	Development bool `yaml:"development,omitempty"`
 
 	Metric metric.MetricConfig `yaml:"metric,omitempty"`
-	// Added by Sai Sreekar - Configuration for Room Egress.
-	// This field allows users to define egress settings at the room level.
-	Egress *livekit.RoomEgress `yaml:"egress"`
-}
-
-// Added by Sai Sreekar - Configuration for AutoTrackEgress.
-// This struct enables specifying track-based egress configurations.
-type EgressConfig struct {
-	Track *livekit.AutoTrackEgress `yaml:"tracks"`
 }
 type RTCConfig struct {
 	rtcconfig.RTCConfig `yaml:",inline"`
