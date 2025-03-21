@@ -286,7 +286,7 @@ func NewRoom(
 		r.protoRoom.CreationTime = now.Unix()
 		r.protoRoom.CreationTimeMs = now.UnixMilli()
 	}
-	r.protoProxy = utils.NewProtoProxy[*livekit.Room](roomUpdateInterval, r.updateProto)
+	r.protoProxy = utils.NewProtoProxy(roomUpdateInterval, r.updateProto)
 
 	r.createAgentDispatchesFromRoomAgent()
 
@@ -710,6 +710,7 @@ func (r *Room) RemoveParticipant(identity livekit.ParticipantIdentity, pID livek
 
 	// remove all published tracks
 	for _, t := range p.GetPublishedTracks() {
+		p.RemovePublishedTrack(t, false, true)
 		r.trackManager.RemoveTrack(t)
 	}
 

@@ -975,7 +975,12 @@ func (p *ParticipantImpl) handleMigrateTracks() []*MediaTrack {
 // records track details and lets client know it's ok to proceed
 func (p *ParticipantImpl) AddTrack(req *livekit.AddTrackRequest) {
 	if !p.CanPublishSource(req.Source) {
-		p.pubLogger.Warnw("no permission to publish track", nil)
+		p.pubLogger.Warnw("no permission to publish track", nil, "trackID", req.Sid, "kind", req.Type)
+		return
+	}
+
+	if req.Type != livekit.TrackType_AUDIO && req.Type != livekit.TrackType_VIDEO {
+		p.pubLogger.Warnw("unsupported track type", nil, "trackID", req.Sid, "kind", req.Type)
 		return
 	}
 
@@ -1209,7 +1214,9 @@ func (p *ParticipantImpl) SetMigrateState(s types.MigrateState) {
 		p.TransportManager.ProcessPendingPublisherOffer()
 
 	case types.MigrateStateComplete:
-		p.params.Logger.Infow("migration complete")
+		if preState == types.MigrateStateSync {
+			p.params.Logger.Infow("migration complete")
+		}
 		p.TransportManager.ProcessPendingPublisherDataChannels()
 		go p.cacheForwarderState()
 	}
@@ -2350,37 +2357,35 @@ func (p *ParticipantImpl) setTrackMuted(trackID livekit.TrackID, muted bool) *li
 		p.supervisor.SetPublicationMute(trackID, muted)
 	}
 
-	track := p.UpTrackManager.SetPublishedTrackMuted(trackID, muted)
+	track, changed := p.UpTrackManager.SetPublishedTrackMuted(trackID, muted)
 	var trackInfo *livekit.TrackInfo
 	if track != nil {
 		trackInfo = track.ToProto()
 	}
 
-	isPending := false
+	// update mute status in any pending/queued add track requests too
 	p.pendingTracksLock.RLock()
 	for _, pti := range p.pendingTracks {
 		for i, ti := range pti.trackInfos {
 			if livekit.TrackID(ti.Sid) == trackID {
 				ti = utils.CloneProto(ti)
+				changed = changed || ti.Muted != muted
 				ti.Muted = muted
 				pti.trackInfos[i] = ti
-				isPending = true
-				trackInfo = ti
+				if trackInfo == nil {
+					trackInfo = ti
+				}
 			}
 		}
 	}
 	p.pendingTracksLock.RUnlock()
 
-	if trackInfo != nil {
+	if trackInfo != nil && changed {
 		if muted {
 			p.params.Telemetry.TrackMuted(context.Background(), p.ID(), trackInfo)
 		} else {
 			p.params.Telemetry.TrackUnmuted(context.Background(), p.ID(), trackInfo)
 		}
-	}
-
-	if !isPending && track == nil {
-		p.pubLogger.Debugw("could not locate track", "trackID", trackID)
 	}
 
 	return trackInfo
